@@ -13,7 +13,7 @@ namespace WSBase.Models
         private WSClock Clock  { get; }
         private WSDeck Library { get; }
 
-        internal IWSCard[] LevelZone       { get; } = new IWSCard[3];
+        internal WSLevelZone LevelZone     { get; } = new WSLevelZone();
         internal WSMemory Memory           { get; } = new WSMemory();
         internal WSStock Stock             { get; } = new WSStock();
         internal WSWaitingRoom WaitingRoom { get; } = new WSWaitingRoom();
@@ -26,8 +26,9 @@ namespace WSBase.Models
         private WSCharacterPosition BackLeft     { get; }
         private WSCharacterPosition BackRight    { get; }
 
-        public bool MustRefresh { get; internal set; }
-        public bool MustLevel   { get; internal set; }
+        public bool MustLevel   { get; internal set; } = false;
+        public bool MustRefresh { get; internal set; } = false;
+        public bool RefreshDmg  { get; private set; } = false;
 
         public IWSClimaxCard ClimaxZone { get; private set; }
 
@@ -61,20 +62,22 @@ namespace WSBase.Models
                 Task.Factory.StartNew(() => promise.SetResult(ChooseLevelRefresh()));
                 var result = await promise.Task;
 
-
-
-
-
-                return;
+                switch (result)
+                {
+                    case WSInterruptChoice.LevelFirst:
+                        await Level();
+                        break;
+                    case WSInterruptChoice.RefreshFirst:
+                        await Refresh();
+                        break;
+                    default:
+                        throw new Exception("Theoretically impossible.");
+                }
             }
 
             if (MustLevel)
             {
-                var promise = new TaskCompletionSource<WSLevelChoice>();
-                Task.Factory.StartNew(() => promise.SetResult(ChooseLevelUp()));
-                var result = await promise.Task;
-
-
+                await Level();
             }
 
             if (MustRefresh)
@@ -83,15 +86,42 @@ namespace WSBase.Models
             }
         }
 
-        private async Task Refresh()
+        private async Task Level()
+        {
+            var promise = new TaskCompletionSource<WSLevelChoice>();
+            Task.Factory.StartNew(() => promise.SetResult(ChooseLevelUp()));
+            var result = await promise.Task;
+            MustLevel = false;
+
+            LevelZone.Put(Clock.TakeAt((int)result));
+            foreach (var card in Clock.Clear())
+            {
+                WaitingRoom.Put(card);
+            }
+
+            //await CheckInterrupts();
+        }
+
+        private Task Refresh()
         {
             Library.Reshuffle(() =>
             {
                 MustRefresh = false;
                 return WaitingRoom.Clear().Shuffle(28);
             });
-            //Clock.Put(Library.Draw());
-            await CheckInterrupts();
+            RefreshDmg = true;
+
+            return Task.CompletedTask;
+        }
+
+        private async Task RefreshPoint()
+        {
+            if (RefreshDmg)
+            {
+                RefreshDmg = false;
+                Clock.Put(Library.Draw());
+                await CheckInterrupts();
+            }
         }
 
         internal async Task TakeDamage(int soul)
@@ -117,6 +147,8 @@ namespace WSBase.Models
                 Clock.Put(ResolutionZone.Dequeue());
                 await CheckInterrupts();
             }
+
+            await RefreshPoint();
         }
     }
 }
